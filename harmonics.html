@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Game Harmonics</title>
+<title>Pulsewave Harmonics</title>
 <style>
   :root {
     --bg: #070b0b;
@@ -113,13 +113,34 @@
   .row .hz { color: var(--text); }
   .row .amp { color: var(--muted); }
   .empty { color: var(--muted); font-size: 0.82rem; padding: 4px 0; }
+  .panel-full { margin-top: 12px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 0.85rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  th {
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+  }
+  .yes { color: var(--teal); font-weight: 700; }
+  .no { color: var(--muted); }
   @media (max-width: 640px) {
     .panels { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
-  <h1>Game Harmonics</h1>
+  <h1>Pulsewave Harmonics</h1>
   <p class="sub">Finds harmonics in a signal. Nothing else.</p>
 
   <div class="bar">
@@ -142,6 +163,16 @@
       <h2><span class="swatch" style="background:var(--violet)"></span>Top 5 peaks</h2>
       <div id="peakList"></div>
     </div>
+  </div>
+
+  <div class="panel panel-full">
+    <h2>Which top-5 peaks belong to the harmonic series?</h2>
+    <table id="classifyTable">
+      <thead>
+        <tr><th>#</th><th>Hz</th><th>x/min</th><th>vs. noise floor</th><th>Belongs to harmonic series?</th></tr>
+      </thead>
+      <tbody id="classifyBody"></tbody>
+    </table>
   </div>
 
 <script>
@@ -526,13 +557,20 @@ function draw(spectrum, harmonicResult, topPeaks) {
   }
 
   // Algorithm B markers (top 5 peaks), offset below so they read separately
+  // from the harmonic-series lines above. Color says whether this peak
+  // belongs to that series: teal matches the harmonic-series color exactly
+  // (same peak, same color, connects visually with the full-height line
+  // above it); violet means the classification table calls it unrelated.
   topPeaks.forEach((p, i) => {
     const x = xForHz(p.hz);
-    ctx.strokeStyle = "rgba(180, 134, 255, 0.55)";
+    const belongs = harmonicResult && classifyPeak(p, harmonicResult, binHz).belongs;
+    const lineColor = belongs ? "rgba(55, 232, 214, 0.55)" : "rgba(180, 134, 255, 0.55)";
+    const textColor = belongs ? "#37e8d6" : "#b486ff";
+    ctx.strokeStyle = lineColor;
     ctx.setLineDash([2, 4]);
     ctx.beginPath(); ctx.moveTo(x, h - 60); ctx.lineTo(x, h - 20); ctx.stroke();
     ctx.setLineDash([]);
-    haloText(`#${i + 1}`, x + 3, h - 26 - (i % 2) * 14, "#b486ff", 11);
+    haloText(`#${i + 1}`, x + 3, h - 26 - (i % 2) * 14, textColor, 11);
   });
 }
 
@@ -560,6 +598,39 @@ function renderLists(harmonicResult, topPeaks) {
     : `<div class="empty">no peaks above the noise floor yet</div>`;
 }
 
+// Cross-references the two independent panels: does this top-5 peak match
+// the harmonic series' fundamental or one of its confirmed harmonics, or is
+// it unrelated? Both come from the same spectrum, so a real match lands
+// within a couple of bins -- not an exact float match.
+function classifyPeak(peak, harmonicResult, binHz) {
+  const tol = Math.max(binHz * 2, 0.05);
+  if (!harmonicResult) return { belongs: false, label: "no series found yet" };
+  if (Math.abs(peak.hz - harmonicResult.fundamental.hz) <= tol) {
+    return { belongs: true, label: "f0 -- fundamental" };
+  }
+  const hm = harmonicResult.harmonics.find((h) => Math.abs(peak.hz - h.hz) <= tol);
+  if (hm) return { belongs: true, label: `${hm.n}f -- harmonic` };
+  return { belongs: false, label: "not part of the series" };
+}
+
+function renderClassification(harmonicResult, topPeaks, spectrum) {
+  const body = document.getElementById("classifyBody");
+  if (!topPeaks.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">no peaks above the noise floor yet</td></tr>`;
+    return;
+  }
+  body.innerHTML = topPeaks.map((p, i) => {
+    const c = classifyPeak(p, harmonicResult, spectrum.binHz);
+    return `<tr>
+      <td>#${i + 1}</td>
+      <td>${p.hz.toFixed(2)} Hz</td>
+      <td>${(p.hz * 60).toFixed(1)}</td>
+      <td>${p.ratio.toFixed(1)}x</td>
+      <td class="${c.belongs ? "yes" : "no"}">${c.belongs ? "&#10003; " : "&mdash; "}${c.label}</td>
+    </tr>`;
+  }).join("");
+}
+
 function frame() {
   drawRawStream();
   const spectrum = computeSpectrum();
@@ -567,6 +638,7 @@ function frame() {
   const topPeaks = spectrum ? findTopPeaks(spectrum) : [];
   draw(spectrum, harmonicResult, topPeaks);
   renderLists(harmonicResult, topPeaks);
+  renderClassification(harmonicResult, topPeaks, spectrum);
   setTimeout(frame, 150);
 }
 frame();

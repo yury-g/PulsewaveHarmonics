@@ -1,4 +1,4 @@
-# Game Harmonics
+# Pulsewave Harmonics
 
 Finds harmonics in a signal. Nothing else.
 
@@ -13,6 +13,11 @@ on the live spectrum:
 - **Top 5 peaks** — the 5 most prominent frequency components in the
   signal, independent of whether they're related to each other or to
   anything else.
+
+A cross-reference table and matching color coding on the spectrum's dashed
+marker lines show, at a glance, which of the top 5 peaks are actually part
+of the harmonic series (teal, same color as the harmonic-series line) and
+which are unrelated (violet).
 
 No cardiac/breath semantics, no confidence gating beyond noise-floor
 significance, no terrain visualization. Verified against synthetic signals
