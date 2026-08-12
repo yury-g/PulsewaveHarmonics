@@ -2,9 +2,10 @@
 
 Finds harmonics in a signal. Nothing else.
 
-Connects to an M5StickS3 running `pulsewave.py` (from the MStackSTICK-S3
-project) over Bluetooth LE and runs two independent, comparable algorithms
-on the live spectrum:
+Connects to a signal source either over Bluetooth LE (an M5StickS3 running
+`pulsewave.py`, from the MStackSTICK-S3 project) or over USB Serial (Arduino
+or any device that just prints numbers) and runs two independent, comparable
+algorithms on the live spectrum:
 
 - **Harmonic series** — finds the single strongest fundamental frequency,
   then checks whether real energy exists at 2x, 3x, 4x, and 5x that
@@ -64,3 +65,28 @@ changes needed:
 <uint32 first_index><uint16 count><uint16 rate_hz><uint32 t_us>
 then count x uint16 little-endian samples
 ```
+
+## USB Serial wire format
+
+Deliberately protocol-agnostic, for "any serial device" rather than one
+specific firmware: **the first comma- or whitespace-separated field on each
+line must be the raw numeric sample.** That's exactly what
+
+```cpp
+Serial.println(analogRead(A0));
+```
+
+already prints — no custom firmware needed. A CSV line like `2043,1990,2100`
+also works (the first field is used). A *labeled* line where the value isn't
+first — `preview,ms,raw,...`, the GameEngine sibling project's own XIAO
+firmware format — is deliberately **rejected, not misread**: silently
+reading the wrong field as the sample would be worse than dropping the line.
+
+A generic sketch has no onboard clock to report the way the BLE stick's
+ISR-timestamped packets do, so the sample rate is *estimated* from how often
+lines actually arrive (a rolling median of inter-line intervals, resistant
+to the occasional slow or dropped line). Pick the baud rate in the dropdown
+to match the device's `Serial.begin(...)` call before connecting.
+
+Only one transport can safely feed the shared analysis buffer at a time —
+connecting one disables the other's button until you disconnect.

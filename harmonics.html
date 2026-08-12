@@ -51,6 +51,14 @@
     cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: default; }
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 10px;
+    font-size: 0.85rem;
+  }
   #status {
     font-size: 0.8rem;
     font-weight: 700;
@@ -151,7 +159,15 @@
   <p class="sub">Finds harmonics in a signal. Nothing else.</p>
 
   <div class="bar">
-    <button id="connectBtn" type="button">Connect StickS3</button>
+    <button id="connectBtn" type="button">Connect StickS3 (Bluetooth)</button>
+    <button id="connectSerialBtn" type="button">Connect Serial (USB)</button>
+    <select id="baudSelect" title="Baud rate -- must match the device's Serial.begin() value">
+      <option value="9600">9600</option>
+      <option value="57600">57600</option>
+      <option value="115200" selected>115200</option>
+      <option value="250000">250000</option>
+      <option value="921600">921600</option>
+    </select>
     <span id="status">not connected</span>
   </div>
 
@@ -261,12 +277,133 @@ async function connect() {
     const tx = await service.getCharacteristic(BLE_TX);
     await tx.startNotifications();
     tx.addEventListener("characteristicvaluechanged", (e) => ingestPacket(e.target.value));
-    device.addEventListener("gattserverdisconnected", () => setStatus("disconnected", "warn"));
-    setStatus("streaming", "live");
+    device.addEventListener("gattserverdisconnected", () => { setStatus("disconnected", "warn"); setTransportButtons(null); });
+    setStatus("streaming (bluetooth)", "live");
+    setTransportButtons("ble");
   } catch (err) {
     setStatus(err?.name === "NotFoundError" ? "canceled" : "connect failed", "warn");
     console.error(err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// USB Serial transport (Web Serial). Deliberately protocol-agnostic: takes
+// the first number found on each line as the sample -- exactly what
+// `Serial.println(analogRead(pin))` already prints, no custom firmware
+// required. A comma-separated line (a CSV-style sketch, e.g. the XIAO
+// firmware from the GameEngine sibling project) works too, since only the
+// first numeric token on the line is used.
+//
+// A generic Arduino sketch has no onboard clock to report the way the BLE
+// stick's ISR-timestamped packets do, so the sample rate here is ESTIMATED
+// from how often lines actually arrive: a rolling median of inter-line
+// intervals, which shrugs off the occasional slow or dropped line that a
+// plain average would not.
+// ---------------------------------------------------------------------------
+let serialPort = null;
+let serialReader = null;
+const serialIntervals = [];
+let lastSerialLineAt = null;
+
+// The FIRST comma- or whitespace-separated field must itself be numeric --
+// not "the first number found anywhere on the line". That distinction
+// matters: a labeled CSV line like "preview,12345,2043,..." (the GameEngine
+// sibling project's own XIAO firmware format) has a numeric *timestamp* as
+// its second field. A "first number anywhere" scan would silently read that
+// timestamp as the sample value -- wrong, and no error to notice it by.
+// Requiring the first field to be numeric instead means an unsupported line
+// shape is correctly rejected (dropped, no sample pushed) rather than
+// silently misread.
+function parseFirstNumber(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const firstField = trimmed.split(/[\s,]+/)[0];
+  const value = Number(firstField);
+  return Number.isFinite(value) ? value : null;
+}
+
+function clampNum(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// nowMs is a parameter (not read internally via performance.now()) so this
+// stays a pure function of its inputs -- directly unit-testable with
+// synthetic line/timestamp sequences, the same way ingestPacket() is tested
+// with synthetic DataViews, without needing a real serial port.
+function ingestSerialLine(line, nowMs) {
+  const value = parseFirstNumber(line);
+  if (value === null || !Number.isFinite(value)) return false;
+
+  if (lastSerialLineAt !== null) {
+    const interval = nowMs - lastSerialLineAt;
+    // Sane bounds (5 Hz-2000 Hz): a huge gap (paused tab, slow line) or a
+    // near-zero one (line-buffering burst) would corrupt the rate estimate
+    // rather than just being a normal jittery interval.
+    if (interval > 0.5 && interval < 200) {
+      serialIntervals.push(interval);
+      if (serialIntervals.length > 40) serialIntervals.shift();
+      const sorted = [...serialIntervals].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      sampleRate = clampNum(1000 / median, 1, 2000);
+    }
+  }
+  lastSerialLineAt = nowMs;
+
+  pushSample(value);
+  lastPacketAt = nowMs;
+  return true;
+}
+
+async function connectSerial() {
+  if (!("serial" in navigator)) {
+    setStatus("Web Serial unavailable", "warn");
+    return;
+  }
+  try {
+    setStatus("opening serial", "warn");
+    serialPort = await navigator.serial.requestPort();
+    const baud = Number(document.getElementById("baudSelect").value);
+    await serialPort.open({ baudRate: baud });
+    serialIntervals.length = 0;
+    lastSerialLineAt = null;
+    setStatus("streaming (serial)", "live");
+    setTransportButtons("serial");
+    readSerialLoop();
+  } catch (err) {
+    setStatus(err?.name === "NotFoundError" ? "canceled" : "serial connect failed", "warn");
+    console.error(err);
+  }
+}
+
+async function readSerialLoop() {
+  const decoder = new TextDecoderStream();
+  const closed = serialPort.readable.pipeTo(decoder.writable).catch(() => {});
+  const reader = decoder.readable.getReader();
+  serialReader = reader;
+  let carry = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      carry += value;
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop();
+      for (const line of lines) ingestSerialLine(line, performance.now());
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    reader.releaseLock();
+    await closed;
+    setStatus("serial disconnected", "warn");
+    setTransportButtons(null);
+  }
+}
+
+// Only one transport can safely feed the shared ring buffer at a time --
+// running both would interleave samples from two unrelated sources into one
+// FFT window. Disable the other connect button while one is live.
+function setTransportButtons(active) {
+  document.getElementById("connectBtn").disabled = active === "serial";
+  document.getElementById("connectSerialBtn").disabled = active === "ble";
 }
 
 function setStatus(text, cls) {
@@ -276,6 +413,7 @@ function setStatus(text, cls) {
 }
 
 document.getElementById("connectBtn").addEventListener("click", connect);
+document.getElementById("connectSerialBtn").addEventListener("click", connectSerial);
 
 // ---------------------------------------------------------------------------
 // FFT. Standard iterative radix-2 Cooley-Tukey on a Hann-windowed copy of
