@@ -67,6 +67,14 @@
     border: 1px solid var(--line);
     border-radius: 10px;
   }
+  #rawStream { height: 160px; margin-bottom: 4px; }
+  .canvas-label {
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 4px;
+  }
   .panels {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -119,6 +127,10 @@
     <span id="status">not connected</span>
   </div>
 
+  <p class="canvas-label">raw stream (time domain)</p>
+  <canvas id="rawStream"></canvas>
+
+  <p class="canvas-label">spectrum (frequency domain)</p>
   <canvas id="spectrum"></canvas>
 
   <div class="panels">
@@ -389,13 +401,16 @@ function findHarmonicSeries(spectrum, { minHz = 0.2, maxHz = 8, minRatio = 2.4, 
 // ---------------------------------------------------------------------------
 const canvas = document.getElementById("spectrum");
 const ctx = canvas.getContext("2d");
+const rawCanvas = document.getElementById("rawStream");
+const rawCtx = rawCanvas.getContext("2d");
 
-function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
+function resizeCanvasTo(c) {
+  const rect = c.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(rect.width * dpr);
-  canvas.height = Math.round(rect.height * dpr);
+  c.width = Math.round(rect.width * dpr);
+  c.height = Math.round(rect.height * dpr);
 }
+function resizeCanvas() { resizeCanvasTo(canvas); }
 
 function haloText(text, x, y, color, size = 12) {
   ctx.font = `${size}px ui-monospace, Menlo, monospace`;
@@ -404,6 +419,48 @@ function haloText(text, x, y, color, size = 12) {
   ctx.strokeText(text, x, y);
   ctx.fillStyle = color;
   ctx.fillText(text, x, y);
+}
+
+// The raw time-domain signal, unprocessed -- no FFT, no windowing, just
+// what the stick is actually sending. Auto-scaled to whatever range the
+// visible window covers, since PPG baseline drifts and a fixed scale would
+// either clip a strong pulse or make a weak one look flat.
+function drawRawStream() {
+  resizeCanvasTo(rawCanvas);
+  const w = rawCanvas.width, h = rawCanvas.height;
+  rawCtx.clearRect(0, 0, w, h);
+
+  if (filled < 2) {
+    rawCtx.fillStyle = "#7c8ba1";
+    rawCtx.font = "13px ui-sans-serif, system-ui, sans-serif";
+    rawCtx.fillText(isLive() ? "waiting for samples..." : "connect the stick to begin", 14, h / 2);
+    return;
+  }
+
+  const n = Math.min(filled, BUF_LEN);
+  const samples = orderedSamples(n);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i += 1) {
+    if (samples[i] < lo) lo = samples[i];
+    if (samples[i] > hi) hi = samples[i];
+  }
+  const span = Math.max(1, hi - lo);
+  const pad = h * 0.08;
+  const yFor = (v) => h - pad - ((v - lo) / span) * (h - pad * 2);
+
+  rawCtx.strokeStyle = "#ffb23f";
+  rawCtx.lineWidth = 1.5;
+  rawCtx.beginPath();
+  for (let i = 0; i < n; i += 1) {
+    const x = (i / (n - 1)) * w;
+    const y = yFor(samples[i]);
+    if (i === 0) rawCtx.moveTo(x, y); else rawCtx.lineTo(x, y);
+  }
+  rawCtx.stroke();
+
+  rawCtx.fillStyle = "#7c8ba1";
+  rawCtx.font = "11px ui-monospace, Menlo, monospace";
+  rawCtx.fillText(`${lo.toFixed(0)}-${hi.toFixed(0)} raw · ${(n / sampleRate).toFixed(1)}s @ ${sampleRate} Hz`, 8, h - 6);
 }
 
 function draw(spectrum, harmonicResult, topPeaks) {
@@ -504,6 +561,7 @@ function renderLists(harmonicResult, topPeaks) {
 }
 
 function frame() {
+  drawRawStream();
   const spectrum = computeSpectrum();
   const harmonicResult = spectrum ? findHarmonicSeries(spectrum) : null;
   const topPeaks = spectrum ? findTopPeaks(spectrum) : [];
