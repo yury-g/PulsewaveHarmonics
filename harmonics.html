@@ -187,7 +187,7 @@
     <p class="sub" style="margin: -4px 0 8px;">Frequency-band heuristics, not a diagnosis. Every row is a guess.</p>
     <table id="guessTable">
       <thead>
-        <tr><th>#</th><th>Hz</th><th>x/min</th><th>Guess</th><th>Why</th></tr>
+        <tr><th>#</th><th>Hz</th><th>x/min</th><th>Guess</th><th>Confidence</th><th>Why</th></tr>
       </thead>
       <tbody id="guessBody"></tbody>
     </table>
@@ -686,42 +686,76 @@ function guessCategory(peak, harmonicResult, binHz) {
   // fundamental it's attached to is itself plausibly a heart rate -- a
   // confirmed harmonic series sitting entirely in the breathing band is a
   // breathing-related series, not a cardiac one.
+  // confirmed: independently corroborated by the harmonic-series match, not
+  // just a frequency falling in the right band -- two independent signals
+  // agreeing is stronger evidence than one.
+  // hedged: explicitly flagged as unconfirmed even though the frequency fits
+  // -- confidence should never be allowed to run high on band membership
+  // alone when the guess itself says "not confirmed".
   if (c.belongs && fundamentalInHeartRange) {
     return c.label.startsWith("f0")
-      ? { guess: "heart-rate fundamental", cls: "guess-heart",
+      ? { guess: "heart-rate fundamental", cls: "guess-heart", confirmed: true, hedged: false,
           why: "confirmed as the harmonic series' fundamental" }
-      : { guess: "cardiac harmonic", cls: "guess-harmonic",
+      : { guess: "cardiac harmonic", cls: "guess-harmonic", confirmed: true, hedged: false,
           why: `${c.label.split(" ")[0]} of the heart-rate fundamental` };
   }
   if (hz <= MOTION_BAND_MAX) {
-    return { guess: "motion / pressure change", cls: "guess-motion",
+    return { guess: "motion / pressure change", cls: "guess-motion", confirmed: false, hedged: false,
              why: "slower than any real breathing rate" };
   }
   if (hz <= RESP_BAND_MAX) {
-    return { guess: "respiratory modulation / envelope", cls: "guess-resp",
+    return { guess: "respiratory modulation / envelope", cls: "guess-resp", confirmed: false, hedged: false,
              why: "typical breathing range, 6-36 per minute" };
   }
   if (hz <= HEART_BAND.max) {
-    return { guess: "heart-rate fundamental", cls: "guess-heart",
+    return { guess: "heart-rate fundamental", cls: "guess-heart", confirmed: false, hedged: true,
              why: "typical pulse range, but not confirmed by the harmonic series" };
   }
-  return { guess: "sensor / electrical noise", cls: "guess-noise",
+  return { guess: "sensor / electrical noise", cls: "guess-noise", confirmed: false, hedged: false,
            why: "outside the expected breathing and pulse bands" };
+}
+
+// Confidence in each guess, 0-4 stars, from two independent signals: how far
+// the peak clears the noise floor (log-scale bucketing -- ratio is inherently
+// a multiplicative quantity, so equal-sized buckets on a linear scale would
+// make everything above ~10x look identically "maxed out"), and whether the
+// guess is independently corroborated by the harmonic-series match. A peak
+// that clears both bars is trustworthy on two counts, not one; an explicitly
+// hedged guess is capped low no matter how strong the raw peak is, since
+// amplitude alone never confirmed *which* category it belongs to.
+function confidenceStars(peak, guess) {
+  let stars;
+  if (peak.ratio >= 40) stars = 4;
+  else if (peak.ratio >= 15) stars = 3;
+  else if (peak.ratio >= 6) stars = 2;
+  else if (peak.ratio >= 3) stars = 1;
+  else stars = 0;
+
+  if (guess.confirmed) stars = Math.max(stars, 3);
+  if (guess.hedged) stars = Math.min(stars, 2);
+
+  return Math.max(0, Math.min(4, stars));
+}
+
+function starRating(stars) {
+  return "&#9733;".repeat(stars) + "&#9734;".repeat(4 - stars);
 }
 
 function renderGuessTable(harmonicResult, topPeaks, spectrum) {
   const body = document.getElementById("guessBody");
   if (!topPeaks.length) {
-    body.innerHTML = `<tr><td colspan="5" class="empty">no peaks above the noise floor yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="empty">no peaks above the noise floor yet</td></tr>`;
     return;
   }
   body.innerHTML = topPeaks.map((p, i) => {
     const g = guessCategory(p, harmonicResult, spectrum.binHz);
+    const stars = confidenceStars(p, g);
     return `<tr>
       <td>#${i + 1}</td>
       <td>${p.hz.toFixed(2)} Hz</td>
       <td>${(p.hz * 60).toFixed(1)}</td>
       <td class="${g.cls}">${g.guess}</td>
+      <td class="${g.cls}" title="${stars}/4">${starRating(stars)}</td>
       <td class="why">${g.why}</td>
     </tr>`;
   }).join("");

@@ -31,13 +31,20 @@ genuinely slower content isn't reliably resolvable at this window length,
 and reporting nothing is more honest than guessing at content the window
 can't actually see.
 
-No confidence gating beyond noise-floor significance, no terrain
-visualization. Verified against synthetic signals with known harmonic
-content and against 30 independent trials of pure noise (zero false
-positives) before shipping — see the commit history for the reasoning,
-including a real peak-detection edge-case bug found and fixed along the way
-(a genuine peak landing exactly on the search floor could be skipped
-entirely).
+Each guess also gets a 0–4 star confidence score, from two independent
+signals: how far the peak clears the noise floor, and whether it's
+corroborated by the harmonic-series match. A guess the code itself flags as
+unconfirmed is capped at 2 stars no matter how strong the raw peak is —
+amplitude alone never confirms *which* category something belongs to.
+Nothing is hidden by a low score; every peak that clears the noise floor
+still gets a row.
+
+No terrain visualization. Verified against synthetic signals with known
+harmonic content and against 30 independent trials of pure noise (zero
+false positives) before shipping — see the commit history for the
+reasoning, including a real peak-detection edge-case bug found and fixed
+along the way (a genuine peak landing exactly on the search floor could be
+skipped entirely).
 
 ## Run
 
