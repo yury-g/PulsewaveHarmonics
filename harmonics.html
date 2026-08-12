@@ -14,6 +14,7 @@
     --teal: #37e8d6;
     --amber: #ffb23f;
     --violet: #b486ff;
+    --coral: #ff7a7a;
   }
   * { box-sizing: border-box; }
   body {
@@ -134,6 +135,12 @@
   }
   .yes { color: var(--teal); font-weight: 700; }
   .no { color: var(--muted); }
+  .guess-heart, .guess-harmonic { color: var(--teal); }
+  .guess-heart { font-weight: 700; }
+  .guess-resp { color: var(--amber); }
+  .guess-motion { color: var(--coral); }
+  .guess-noise { color: var(--muted); }
+  td .why { color: var(--muted); font-size: 0.78rem; }
   @media (max-width: 640px) {
     .panels { grid-template-columns: 1fr; }
   }
@@ -172,6 +179,17 @@
         <tr><th>#</th><th>Hz</th><th>x/min</th><th>vs. noise floor</th><th>Belongs to harmonic series?</th></tr>
       </thead>
       <tbody id="classifyBody"></tbody>
+    </table>
+  </div>
+
+  <div class="panel panel-full">
+    <h2>Guessing table -- what each peak might be</h2>
+    <p class="sub" style="margin: -4px 0 8px;">Frequency-band heuristics, not a diagnosis. Every row is a guess.</p>
+    <table id="guessTable">
+      <thead>
+        <tr><th>#</th><th>Hz</th><th>x/min</th><th>Guess</th><th>Why</th></tr>
+      </thead>
+      <tbody id="guessBody"></tbody>
     </table>
   </div>
 
@@ -349,7 +367,15 @@ function findTopPeaks(spectrum, { minHz = 0.2, maxHz = 15, maxCount = 5, minRati
   for (let bin = start; bin <= end; bin += 1) band.push(amps[bin]);
   const noiseFloor = Math.max(1e-9, percentile(band, 0.5));
   const peaks = [];
-  for (let bin = start + 1; bin < end; bin += 1) {
+  // Starts AT start, not start+1: start = Math.max(1, ...) already guarantees
+  // amps[start-1] is a valid index, so there is no need to skip it -- doing
+  // so created a real blind spot where a genuine peak landing exactly on the
+  // minHz boundary bin was never even examined (found via a synthetic 0.2 Hz
+  // signal with minHz's default of 0.2: the true peak sat right at the edge
+  // bin and was skipped, and whatever leakage-tail bump happened to be the
+  // first candidate further out got reported instead -- a convincing-looking
+  // but wrong frequency).
+  for (let bin = start; bin < end; bin += 1) {
     const l = amps[bin - 1], c = amps[bin], r = amps[bin + 1];
     if (c <= l || c <= r) continue;
     const ratio = c / noiseFloor;
@@ -631,6 +657,76 @@ function renderClassification(harmonicResult, topPeaks, spectrum) {
   }).join("");
 }
 
+// ---------------------------------------------------------------------------
+// Guessing table: attaches a plain-language, frequency-band guess to each
+// top-5 peak. This is explicitly a guess -- a heuristic reading of where the
+// peak sits in frequency, not a diagnosis, and it says so. Band edges match
+// the ones already established for this sensor in the GameEngine sibling
+// project (breathing ~0.1-0.6 Hz, pulse ~0.6-3.5 Hz), so the two tools agree
+// with each other rather than inventing a second, different set of cutoffs.
+// ---------------------------------------------------------------------------
+const HEART_BAND = { min: 0.6, max: 3.5 };   // 36-210 bpm
+const RESP_BAND_MAX = 0.6;                    // up to ~36 breaths/min
+// Slower than any real breath -- but findTopPeaks searches down to 0.2 Hz by
+// default, and the 8.2 s buffer can't reliably resolve a full cycle below
+// roughly that anyway (a 0.05 Hz drift needs a 20 s window; tested and
+// confirmed it just produces misleading noise with this buffer size). So
+// this band is architecturally correct but will rarely populate with the
+// current settings -- an honest limit, not a bug: better to correctly find
+// nothing than to guess at content the window can't actually see.
+const MOTION_BAND_MAX = 0.1;
+
+function guessCategory(peak, harmonicResult, binHz) {
+  const hz = peak.hz;
+  const c = harmonicResult ? classifyPeak(peak, harmonicResult, binHz) : { belongs: false, label: "" };
+  const fundamentalInHeartRange = harmonicResult &&
+    harmonicResult.fundamental.hz > HEART_BAND.min && harmonicResult.fundamental.hz <= HEART_BAND.max;
+
+  // A confirmed harmonic-series member only gets a cardiac guess if the
+  // fundamental it's attached to is itself plausibly a heart rate -- a
+  // confirmed harmonic series sitting entirely in the breathing band is a
+  // breathing-related series, not a cardiac one.
+  if (c.belongs && fundamentalInHeartRange) {
+    return c.label.startsWith("f0")
+      ? { guess: "heart-rate fundamental", cls: "guess-heart",
+          why: "confirmed as the harmonic series' fundamental" }
+      : { guess: "cardiac harmonic", cls: "guess-harmonic",
+          why: `${c.label.split(" ")[0]} of the heart-rate fundamental` };
+  }
+  if (hz <= MOTION_BAND_MAX) {
+    return { guess: "motion / pressure change", cls: "guess-motion",
+             why: "slower than any real breathing rate" };
+  }
+  if (hz <= RESP_BAND_MAX) {
+    return { guess: "respiratory modulation / envelope", cls: "guess-resp",
+             why: "typical breathing range, 6-36 per minute" };
+  }
+  if (hz <= HEART_BAND.max) {
+    return { guess: "heart-rate fundamental", cls: "guess-heart",
+             why: "typical pulse range, but not confirmed by the harmonic series" };
+  }
+  return { guess: "sensor / electrical noise", cls: "guess-noise",
+           why: "outside the expected breathing and pulse bands" };
+}
+
+function renderGuessTable(harmonicResult, topPeaks, spectrum) {
+  const body = document.getElementById("guessBody");
+  if (!topPeaks.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">no peaks above the noise floor yet</td></tr>`;
+    return;
+  }
+  body.innerHTML = topPeaks.map((p, i) => {
+    const g = guessCategory(p, harmonicResult, spectrum.binHz);
+    return `<tr>
+      <td>#${i + 1}</td>
+      <td>${p.hz.toFixed(2)} Hz</td>
+      <td>${(p.hz * 60).toFixed(1)}</td>
+      <td class="${g.cls}">${g.guess}</td>
+      <td class="why">${g.why}</td>
+    </tr>`;
+  }).join("");
+}
+
 function frame() {
   drawRawStream();
   const spectrum = computeSpectrum();
@@ -639,6 +735,7 @@ function frame() {
   draw(spectrum, harmonicResult, topPeaks);
   renderLists(harmonicResult, topPeaks);
   renderClassification(harmonicResult, topPeaks, spectrum);
+  renderGuessTable(harmonicResult, topPeaks, spectrum);
   setTimeout(frame, 150);
 }
 frame();

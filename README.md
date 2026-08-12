@@ -19,11 +19,25 @@ marker lines show, at a glance, which of the top 5 peaks are actually part
 of the harmonic series (teal, same color as the harmonic-series line) and
 which are unrelated (violet).
 
-No cardiac/breath semantics, no confidence gating beyond noise-floor
-significance, no terrain visualization. Verified against synthetic signals
-with known harmonic content and against 30 independent trials of pure noise
-(zero false positives) before shipping — see the commit history for the
-reasoning.
+A **guessing table** attaches a plain-language, frequency-band guess to each
+top-5 peak — heart-rate fundamental, cardiac harmonic, respiratory
+modulation/envelope, motion/pressure change, or sensor/electrical noise.
+Every row says explicitly that it's a guess: a frequency-band heuristic, not
+a diagnosis. Band edges (breathing ~0.1–0.6 Hz, pulse ~0.6–3.5 Hz) match the
+ones already established for this sensor in the GameEngine sibling project.
+The motion/pressure band is architecturally correct but, with the current
+~8.2 s analysis window and 0.2 Hz search floor, will rarely populate —
+genuinely slower content isn't reliably resolvable at this window length,
+and reporting nothing is more honest than guessing at content the window
+can't actually see.
+
+No confidence gating beyond noise-floor significance, no terrain
+visualization. Verified against synthetic signals with known harmonic
+content and against 30 independent trials of pure noise (zero false
+positives) before shipping — see the commit history for the reasoning,
+including a real peak-detection edge-case bug found and fixed along the way
+(a genuine peak landing exactly on the search floor could be skipped
+entirely).
 
 ## Run
 
