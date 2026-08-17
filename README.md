@@ -1,3 +1,5 @@
+> **Personal independent research by Yury Gitman.** This repository is not official World Famous Electronics or PulseSensor documentation, does not define product behavior, and must not be used as current WFE source of truth. Current company and product information lives under [`WorldFamousElectronics`](https://github.com/WorldFamousElectronics).
+
 # Pulsewave Harmonics
 
 Finds harmonics in a signal. Nothing else.
